@@ -106,6 +106,7 @@ set (LOCAL_SRC_FILES ${LOCAL_SRC_FILES}
     # utils
     ${BS_DIR_INSTRUMENTATION}/utils/common/iu_debug.c
     ${BS_DIR_INSTRUMENTATION}/utils/linux/iu_std_linux.cpp
+    ${BS_DIR_INSTRUMENTATION}/utils/linux/iu_dbus_service.cpp
     # external
     ${BS_DIR_EXTERNAL}/mesa/src/intel/common/gen_device_info.c
 )
@@ -197,15 +198,15 @@ set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,relro")
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,now")
 
 if ("${PLATFORM}" STREQUAL "linux")
+    FIND_PACKAGE(PkgConfig REQUIRED)
+    PKG_CHECK_MODULES(PKG_DBUS QUIET dbus-1)
+    add_definitions(${PKG_DBUS_CFLAGS})
     # linux
     add_library(${PROJECT_NAME} SHARED ${LOCAL_SRC_FILES})
-endif ()
-
-if ("${PLATFORM}" STREQUAL "linux")
-    # linux
     target_link_libraries(
         ${PROJECT_NAME}                 # md
         ${DRM_LIB_PATH}                 # drm
+        ${PKG_DBUS_LIBRARIES}
         rt
         pthread
         stdc++

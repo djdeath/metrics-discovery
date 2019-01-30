@@ -334,6 +334,10 @@ CDriverInterfaceLinuxPerf::CDriverInterfaceLinuxPerf()
     , m_PerfStreamConfigId( -1 )
 {
     MD_LOG_ENTER();
+
+    if (m_DBusService.Init() != CC_OK)
+      MD_LOG( LOG_WARNING, "ERROR: Failed to initialize connection to DBus service" );
+
     MD_LOG_EXIT();
 }
 
@@ -1538,6 +1542,20 @@ TCompletionCode CDriverInterfaceLinuxPerf::SetFrequencyOverride( const TSetFrequ
             MD_LOG( LOG_ERROR, "ERROR: Invalid frequency (%u MHz), should be in range [%llu, %llu]", params->FrequencyMhz, minFrequency, maxFrequency );
             ret = CC_ERROR_INVALID_PARAMETER;
         }
+
+        // 3. Acquire frequency override
+        if( ret == CC_OK )
+        {
+            if( !m_DBusService.IsFrequencyAcquired( m_DrmCardNumber ) )
+                ret = m_DBusService.AcquireFrequencyOverride( m_DrmCardNumber );
+        }
+
+        // 4. Request frequency change (set frequency override)
+        if( ret == CC_OK )
+        {
+            ret = m_DBusService.SetFrequency( m_DrmCardNumber, minFrequencyToSet, maxFrequencyToSet, boostFrequencyToSet );
+            MD_CHECK_CC_RET( ret );
+        }
     }
     else
     {
@@ -1545,23 +1563,8 @@ TCompletionCode CDriverInterfaceLinuxPerf::SetFrequencyOverride( const TSetFrequ
         minFrequencyToSet   = minFrequency;
         maxFrequencyToSet   = maxFrequency;
         boostFrequencyToSet = boostFrequency;
-    }
 
-    // 3. Request frequency change (set frequency override)
-    if( ret == CC_OK )
-    {
-        ret = WriteSysFsFile( MIN_FREQ_OV_FILE_NAME, minFrequencyToSet );
-        MD_CHECK_CC_RET( ret );
-
-        ret = WriteSysFsFile( MAX_FREQ_OV_FILE_NAME, maxFrequencyToSet );
-        MD_CHECK_CC_RET( ret );
-
-        // If boost frequency file available
-        if( boostFrequency )
-        {
-            ret = WriteSysFsFile( BOOST_FREQ_OV_FILE_NAME, boostFrequencyToSet );
-            MD_CHECK_CC_RET( ret );
-        }
+        ret = m_DBusService.ReleaseFrequencyOverride( m_DrmCardNumber );
     }
 
     return ret;
@@ -1964,33 +1967,20 @@ TCompletionCode CDriverInterfaceLinuxPerf::AddPerfConfig( TRegister** regVector,
 
     MD_LOG( LOG_DEBUG, "Adding configuration under guid: %s", guid );
 
-    // 3. SET PARAMS
-    struct drm_i915_perf_oa_config param = {0,};
-
-    static_assert( sizeof(param.uuid) == (MD_PERF_GUID_LENGTH - 1), "GUID length mismatch with i915 Perf API" );
-    iu_memcpy_s( param.uuid, sizeof(param.uuid), guid, MD_PERF_GUID_LENGTH - 1 );   // Copy without ending '\0' (size 36)
-
-    param.boolean_regs_ptr = (uint64_t)oaRegisters.data();
-    param.mux_regs_ptr     = (uint64_t)noaRegisters.data();
-    param.flex_regs_ptr    = (uint64_t)flexRegisters.data();
-
-    param.n_boolean_regs   = (uint32_t)oaRegisters.size();
-    param.n_mux_regs       = (uint32_t)noaRegisters.size();
-    param.n_flex_regs      = (uint32_t)flexRegisters.size();
-
-    // 4. ADD CONFIG TO PERF
-    *addedConfigId = SendIoctl( m_DrmFd, DRM_IOCTL_I915_PERF_ADD_CONFIG, &param );
-    if( *addedConfigId == -1 )
+    // 3. ADD CONFIG TO PERF
+    *addedConfigId = -1;
+    ret = m_DBusService.RegisterConfiguration( m_DrmCardNumber, guid, noaRegisters, oaRegisters, flexRegisters, addedConfigId );
+    if( ret != CC_OK )
     {
-        if( errno != EADDRINUSE ) // errno == 98 (EADDRINUSE) means set with the given GUID is already added
-        {
-            MD_LOG( LOG_ERROR, "ERROR: Adding i915 perf configuration failed, errno: %s (%u)", strerror(errno), errno );
-            ret = CC_ERROR_GENERAL;
-        }
-        else
+        if( ret != CC_ALREADY_INITIALIZED )
         {
             MD_LOG( LOG_DEBUG, "Configuration with the given GUID already added, reusing" );
             ret = GetPerfMetricSetId( guid, (uint32_t*)addedConfigId );
+        }
+        else
+        {
+            MD_LOG( LOG_ERROR, "ERROR: Adding i915 perf configuration failed" );
+            ret = CC_ERROR_GENERAL;
         }
     }
 
@@ -2035,19 +2025,11 @@ TCompletionCode CDriverInterfaceLinuxPerf::RemovePerfConfig( int32_t perfConfigI
     {
         MD_LOG( LOG_DEBUG, "Removing perf configuration with id: %d", perfConfigId );
 
-        uint64_t perfConfigId64 = (uint64_t)perfConfigId;
-        int32_t ioctlResult = SendIoctl( m_DrmFd, DRM_IOCTL_I915_PERF_REMOVE_CONFIG, &perfConfigId64 );
-        if( ioctlResult )
+        ret = m_DBusService.UnregisterConfiguration( m_DrmCardNumber, perfConfigId );
+        if( ret != CC_OK )
         {
-            if( errno != ENOENT ) // errno == 2 (ENOENT) means set with the given ID doesn't exist
-            {
-                MD_LOG( LOG_ERROR, "ERROR: Removing perf configuration with id %d failed, config not found", perfConfigId );;
-            }
-            else
-            {
-                MD_LOG( LOG_ERROR, "ERROR: Removing perf configuration with id %d failed, errno: %s (%u)", perfConfigId, strerror( errno ), errno );
-            }
-            ret = CC_ERROR_GENERAL;
+          MD_LOG( LOG_ERROR, "ERROR: Removing perf configuration with id %d failed", perfConfigId );;
+          ret = CC_ERROR_GENERAL;
         }
         else
         {

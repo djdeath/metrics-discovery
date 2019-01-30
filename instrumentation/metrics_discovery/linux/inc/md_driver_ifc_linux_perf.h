@@ -42,6 +42,8 @@ extern "C" {
 }
 #endif
 
+#include "iu_dbus_service.h"
+
 using namespace MetricsDiscovery;
 
 namespace MetricsDiscoveryInternal
@@ -216,6 +218,8 @@ private: // Variables
 
     // Query
     std::vector<int32_t>         m_AddedPerfConfigs;            // IDs of configurations added to Perf for the need of query, needed for later config removal
+
+    CDBusService                 m_DBusService;
 };
 
 }
